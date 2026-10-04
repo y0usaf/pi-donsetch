@@ -1,3 +1,8 @@
+> **pi-donsetch.** The pi extension from [dondai44423/donsetch](https://github.com/dondai44423/donsetch) v3.4.4
+> with two fixes: stderr no longer corrupts the TUI frame, and there is no footer tool-count line. `flake.nix`
+> packages the extension with the prebuilt Linux x86_64 binary in `binaries/`, patched to run on NixOS; add the
+> store path of `packages.x86_64-linux.default` to `packages` in pi's `settings.json`. AGPL-3.0, as upstream.
+
 # DonSeTch
 
 > Web fetch, search, and crawl for AI agents. Zero API keys. Chrome-true TLS. Built in Rust.
