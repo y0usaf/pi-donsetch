@@ -27,21 +27,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Text } from "@earendil-works/pi-tui";
 
-// ── Constants ──
 const INIT_TIMEOUT_MS = 10_000;
 const CALL_TIMEOUT_MS = 120_000;
 const SHUTDOWN_GRACE_MS = 2_000;
 
-// Child stderr goes to a log file, never the terminal: raw writes
-// under an active TUI corrupt the frame.
 const serverLog = createWriteStream(join(tmpdir(), "donsetch-mcp.log"), { flags: "a" });
-
-// ── TUI rendering note ──
-// Pi's TUI wraps tool calls in its own green (success) / red (failure)
-// highlight. We output PLAIN TEXT only — no ANSI codes at all.
-// pi-tui's truncateToWidth injects \x1b[0m RESET around the ellipsis,
-// which breaks pi's overlay mid-line. We use our own truncate()
-// that adds zero ANSI codes.
 
 /** Plain text truncation — no ANSI codes. */
 function truncate(text: string, maxLen: number): string {
@@ -50,14 +40,12 @@ function truncate(text: string, maxLen: number): string {
   return text.slice(0, maxLen - 3) + "...";
 }
 
-// ── Tool icons ──
 const ICONS: Record<string, string> = {
-  web_fetch:  "\u{1F310}",  // 🌐
-  web_search: "\u{1F50E}",  // 🔎
-  web_crawl:  "\u{1F577}\u{FE0F}",  // 🕷️
+  web_fetch:  "\u{1F310}",
+  web_search: "\u{1F50E}",
+  web_crawl:  "\u{1F577}\u{FE0F}",
 };
 
-// ── MCP client state ──
 let proc: ChildProcess | null = null;
 let nextId = 1;
 const pending = new Map<
@@ -66,8 +54,6 @@ const pending = new Map<
 >();
 let initialized = false;
 const toolNames: string[] = [];
-
-// ── Binary resolution ──
 
 function getBinaryPath(): string {
   const pkgDir = __dirname;
@@ -107,8 +93,6 @@ function ensureBinary(): string {
   return binaryPath;
 }
 
-// ── MCP JSON-RPC 2.0 over stdio ──
-
 function startServer(): Promise<void> {
   if (proc && initialized) return Promise.resolve();
   if (proc && !initialized) return Promise.reject(new Error("donsetch MCP server is still initializing"));
@@ -123,10 +107,6 @@ function startServer(): Promise<void> {
     }
 
     try {
-      // --supervised: crash-only daemon. If the MCP server is SIGKILLed
-      // (OOM, crash), the supervisor respawns it and replays in-flight
-      // requests — pi users never see a dead tool until the process
-      // itself dies.
       proc = spawn(binaryPath, ["mcp", "--supervised"], {
         stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env },
@@ -158,7 +138,6 @@ function startServer(): Promise<void> {
             }
           }
         } catch {
-          /* ignore non-JSON lines on stdout */
         }
       }
     });
@@ -187,11 +166,6 @@ function startServer(): Promise<void> {
       pending.clear();
     });
 
-    // A write to a server that just died sinks into the stream and
-    // comes back as an async 'error' event (EPIPE/ECONNRESET). With
-    // no listener Node escalates it to an uncaughtException, killing
-    // the whole pi process, the "write EPIPE" crash. Handling it like
-    // an unexpected exit keeps pi alive and fails the request cleanly.
     const onStreamError = (err: NodeJS.ErrnoException) => {
       proc = null;
       initialized = false;
@@ -247,9 +221,6 @@ function sendRequest(
         finish(reject, new Error(`MCP request timeout (${timeoutMs}ms): ${method}`));
       }
     }, timeoutMs);
-    // v3 real MCP cancellation: forward pi's abort to the server so the
-    // in-flight fetch/crawl actually stops server-side, then settle
-    // locally. The caller maps this to a graceful "Cancelled" result.
     const onAbort = () => {
       if (pending.delete(id)) {
         clearTimeout(timer);
@@ -286,7 +257,6 @@ function sendNotification(method: string, params: any): void {
   try {
     proc.stdin.write(msg + "\n");
   } catch {
-    // Stream error handler covers the async EPIPE; nothing to do here.
   }
 }
 
@@ -318,8 +288,6 @@ function killServer(): void {
 function isAlive(): boolean {
   return proc !== null && !proc.killed && proc.stdin?.writable === true;
 }
-
-// ── TUI helpers ──
 
 /** Extract a clean preview line from markdown content. */
 function getPreview(text: string, maxLen = 72): string {
@@ -400,8 +368,6 @@ function getFetchStatus(sc: any): string {
   return "";
 }
 
-// ── Extension ──
-
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     try {
@@ -454,11 +420,6 @@ export default function (pi: ExtensionAPI) {
 
           try {
             const result = await callMcpTool(toolName, params, _signal);
-            // Join all content text blocks, skipping [meta] blocks.
-            // [meta] blocks contain compact metadata for clients
-            // (Claude Code, VSCode) that drop text when
-            // structuredContent is present. Pi reads structuredContent
-            // directly for details, so meta blocks are redundant here.
             const text = (result?.content ?? [])
               .map((b: any) => b?.text ?? "")
               .filter((t: string) => !t.startsWith("[meta]"))
@@ -466,7 +427,6 @@ export default function (pi: ExtensionAPI) {
             const isErr = result?.isError ?? false;
             const sc = result?.structuredContent ?? null;
 
-            // Build details for TUI rendering
             const details: any = {
               mcpTool: toolName,
               isError: isErr,
@@ -485,7 +445,6 @@ export default function (pi: ExtensionAPI) {
               details.pages = countCrawlPages(text);
             }
 
-            // For errors, extract error text + v3 stable error code
             if (isErr) {
               details.error = getPreview(text, 60);
               if (sc?.code) details.code = sc.code;
@@ -499,9 +458,6 @@ export default function (pi: ExtensionAPI) {
               isError: isErr,
             };
           } catch (err: any) {
-            // User pressed Esc in pi: we already told the server to stop
-            // (notifications/cancelled). Graceful non-error result, per
-            // pi's extension contract for aborted calls.
             if (err.message === "cancelled") {
               return {
                 content: [{ type: "text", text: "Cancelled" }],
@@ -523,9 +479,6 @@ export default function (pi: ExtensionAPI) {
           } else if (args?.query) {
             key = truncate(`"${args.query}"`, 50);
           }
-          // Plain text only — no ANSI codes. Pi wraps tool calls
-          // in its own green (success) / red (failure) highlight.
-          // Any ANSI we emit breaks pi's overlay mid-line.
           return new Text(
             `${icon} ${toolName}  ${key}`,
             0, 0
@@ -540,7 +493,6 @@ export default function (pi: ExtensionAPI) {
           const isErr = result?.isError || result?.details?.isError;
           const d = result?.details ?? {};
 
-          // Build metadata string per tool
           let meta = "";
           if (toolName === "web_fetch") {
             const parts: string[] = [];
@@ -560,7 +512,6 @@ export default function (pi: ExtensionAPI) {
             meta = `${pages} page${pages !== 1 ? "s" : ""}`;
           }
 
-          // Build line 2: preview or error
           let line2 = "";
           if (d.cancelled) {
             line2 = "cancelled";
@@ -572,7 +523,6 @@ export default function (pi: ExtensionAPI) {
             line2 = d.preview;
           }
 
-          // Plain text only — no ANSI. Pi handles all coloring.
           const line1 = `${toolName} \u00B7 ${meta}`;
           const output = line2
             ? `${line1}\n  ${line2}`
